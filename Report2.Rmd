@@ -1,0 +1,173 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readxl)
+library(tidyverse)
+library(knitr)
+library(naniar)
+library(gridExtra)
+
+forcedeck <- read_excel("data/forcedeck.xlsx")
+forceframe <- read_excel("data/forceframe.xlsx")
+nordbord <- read_excel("data/nordbord.xlsx")
+perch <- read_excel("data/perch.xlsx")
+```
+
+```{r}
+# Select Variables 
+forcedeck <-  forcedeck |>
+  select(`Athlete Id`, `Test Date`,
+         `Body Weight [kg]`, 
+         `RSI-modified [m/s]`, 
+         `Eccentric Deceleration RFD Asymmetry [% L,R]`, 
+         `Landing Impulse (Asymmetry) [% L,R]`, 
+         `Peak Landing Force Asymmetry [% L,R]`)
+
+nordbord <- nordbord |>
+            select(athleteId, testDateUtc, leftMaxForce, rightMaxForce)
+
+perch <- perch |> 
+         select(name, start_time, max_peak_power, weight)
+
+# Chose two most prominent tests
+forceframe_shoulder <- forceframe |>
+  select(athleteId, testDateUtc, innerLeftMaxForce, innerRightMaxForce,
+         outerLeftMaxForce, outerRightMaxForce, testPositionName) |> 
+  filter(testPositionName == "Shoulder IR/ER - Custom")
+
+forceframe_hip <- forceframe |>
+  select(athleteId, testDateUtc, innerLeftMaxForce, innerRightMaxForce,
+         outerLeftMaxForce, outerRightMaxForce, testPositionName) |> 
+  filter(testPositionName == "Hip AD/AB - 60") 
+```
+
+```{r}
+# Calculate Asymmetries and select variables
+
+nordbord <- nordbord |> mutate(maxforce_asymmetry = 100 * abs((leftMaxForce - rightMaxForce)/pmax(leftMaxForce, rightMaxForce))) |> select(!leftMaxForce)
+
+forceframe_shoulder <- forceframe_shoulder |> 
+  mutate(innerMaxForce_Asymmetry_shoulder = 100 * abs((innerLeftMaxForce - innerRightMaxForce)/ pmax(innerLeftMaxForce, innerRightMaxForce)), outerMaxForce_Asymmetry_shoulder = 100 * abs((outerLeftMaxForce - outerRightMaxForce)/ pmax(outerLeftMaxForce, outerRightMaxForce))) |> 
+  select(!c(innerLeftMaxForce, outerLeftMaxForce, innerRightMaxForce, testPositionName))
+
+forceframe_hip <- forceframe_hip |> 
+  mutate(innerMaxForce_Asymmetry_hip = 100 * abs((innerLeftMaxForce - innerRightMaxForce)/ pmax(innerLeftMaxForce, innerRightMaxForce)), outerMaxForce_Asymmetry_hip = 100 * abs((outerLeftMaxForce - outerRightMaxForce)/ pmax(outerLeftMaxForce, outerRightMaxForce)))|> 
+  select(!c(innerLeftMaxForce, outerLeftMaxForce, outerRightMaxForce, testPositionName))
+```
+
+```{r}
+# Create date variable
+start_date <- as.Date("2024-01-01")
+
+nordbord <- nordbord |> 
+  mutate(date_parsed = as.POSIXct(testDateUtc, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC"),
+         date = as.Date(date_parsed)) |> 
+  filter(date >= start_date) |>
+  select(-testDateUtc, -date_parsed)
+
+forceframe_hip <- forceframe_hip |> 
+  mutate(date_parsed = as.POSIXct(testDateUtc, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC"),
+         date = as.Date(date_parsed)) |> 
+  filter(date >= start_date) |>
+  select(-testDateUtc, -date_parsed)
+
+forceframe_shoulder <- forceframe_shoulder |> 
+  mutate(date_parsed = as.POSIXct(testDateUtc, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC"),
+         date = as.Date(date_parsed)) |> 
+  filter(date >= start_date) |>
+  select(-testDateUtc, -date_parsed)
+
+perch <- perch |>
+  mutate(date = as_datetime(start_time, tz = "UTC"),
+         date = as.Date(date)) |>
+  filter(date >= start_date) |>
+  select(-start_time)
+
+forcedeck <- forcedeck |> 
+  mutate(date = as.Date(`Test Date`)) |>
+  filter(date >= start_date) |>
+  select(-`Test Date`)
+
+```
+
+```{r}
+# Renamed athleteID 
+nordbord <- nordbord |> rename(athleteId = athleteId)
+forceframe_hip <- forceframe_hip |> rename(athleteId = athleteId)
+forceframe_shoulder <- forceframe_shoulder |> rename(athleteId = athleteId)
+perch <- perch |> rename(athleteId = name)
+forcedeck <- forcedeck |> rename(athleteId = `Athlete Id`)
+
+```
+
+```{r}
+# Organized and joined the data for performance scores
+
+p <- perch |> 
+  mutate(Metric = "max_peak_power") |> 
+  rename(Score = max_peak_power) |> 
+  select(athleteId, date, Metric, Score) |> 
+  mutate(Score = scale(Score))
+
+nb <- nordbord |> select(-maxforce_asymmetry) |> 
+  mutate(Metric = "rightMaxForce") |> 
+  rename(Score = rightMaxForce) |> 
+  select(athleteId, date, Metric, Score) |> 
+  mutate(Score = scale(Score))
+
+fd <- forcedeck |> select(athleteId, date, `RSI-modified [m/s]`) |>
+  mutate(Metric = "RSI") |>
+  rename(Score = `RSI-modified [m/s]`) |> 
+  select(athleteId, date, Metric, Score) |> 
+  mutate(Score = scale(Score))
+
+ffh <- forceframe_hip |> select(-innerMaxForce_Asymmetry_hip, -outerMaxForce_Asymmetry_hip) |> 
+  mutate(Metric = "innerMaxForce") |>
+  rename(Score = innerRightMaxForce) |> 
+  select(athleteId, date, Metric, Score)|> 
+  mutate(Score = scale(Score))
+
+ffs <- forceframe_shoulder |> select(-innerMaxForce_Asymmetry_shoulder, -outerMaxForce_Asymmetry_shoulder) |> 
+  mutate(Metric = "outerMaxForce") |>
+  rename(Score = outerRightMaxForce) |> 
+  select(athleteId, date, Metric, Score) |> 
+  mutate(Score = scale(Score))
+
+data <- rbind(p, nb, fd, ffh, ffs) 
+
+```
+
+```{r}
+# Added weight variable
+
+w1 <- forcedeck |> select(athleteId, `Body Weight [kg]`) |> 
+  group_by(athleteId) |>
+  summarise(`Body Weight [kg]` = mean(`Body Weight [kg]`))
+
+w2 <- perch |> select(athleteId, weight) |> 
+  group_by(athleteId) |>
+  summarise(weight = mean(`weight`))
+
+
+combined <- left_join(w1, w2, by = "athleteId")
+
+weight <- combined |>
+  mutate(body_weight = case_when(
+    !is.na(`Body Weight [kg]`) ~ `Body Weight [kg]`,
+    !is.na(weight) ~ weight * 0.453592,
+    TRUE ~ NA_real_
+  )) |>
+  select(-c(`Body Weight [kg]`, weight))
+
+data <- left_join(data, weight, by = "athleteId")
+```
+
+
+
+
+
+
+
+
+
+

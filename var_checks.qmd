@@ -1,0 +1,107 @@
+---
+title: "Case Study Report"
+format: pdf
+editor: visual
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r, packages}
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(lubridate)
+library(naniar)
+library(lme4)
+```
+
+```{r, load-data}
+forcedeck <- read_excel("data/forcedeck.xlsx")
+forceframe <- read_excel("data/forceframe.xlsx")
+nordbord <- read_excel("data/nordbord.xlsx")
+perch <- read_excel("data/perch.xlsx")
+```
+
+```{r}
+# ---- forcedeck ----
+forcedeck_vars <- c(
+  "Athlete Id",
+  "RSI-modified [m/s]",
+  "Peak Landing Force (Left) [N]",
+  "Peak Landing Force (Right) [N]",
+  "Landing Impulse (Left) [N s]",
+  "Landing Impulse (Right) [N s]",
+  "Eccentric Deceleration Impulse (Left) [N s]",
+  "Eccentric Deceleration Impulse (Right) [N s]"
+)
+
+forcedeck_long <- forcedeck |>
+  select(all_of(forcedeck_vars)) |>
+  pivot_longer(-`Athlete Id`, names_to = "variable", values_to = "value") |>
+  group_by(`Athlete Id`, variable) |>
+  summarise(var = var(value, na.rm = TRUE), .groups = "drop")
+
+ggplot(forcedeck_long, aes(x = var)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal()
+
+# ---- forceframe ----
+forceframe_vars <- c(
+  "athleteId",
+  "innerRightMaxForce",
+  "innerLeftMaxForce",
+  "outerRightMaxForce",
+  "outerLeftMaxForce"
+)
+
+forceframe_long <- forceframe |>
+  select(all_of(forceframe_vars)) |>
+  pivot_longer(-athleteId, names_to = "variable", values_to = "value") |>
+  group_by(athleteId, variable) |>
+  summarise(var = var(value, na.rm = TRUE), .groups = "drop")
+
+ggplot(forceframe_long, aes(x = var)) +
+  geom_histogram(bins = 30, fill = "tomato", color = "white") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal()
+
+# ---- nordbord ----
+nordbord_vars <- c(
+  "athleteId",
+  "rightMaxForce",
+  "leftMaxForce"
+)
+
+nordbord_long <- nordbord |>
+  select(all_of(nordbord_vars)) |>
+  pivot_longer(-athleteId, names_to = "variable", values_to = "value") |>
+  group_by(athleteId, variable) |>
+  summarise(var = var(value, na.rm = TRUE), .groups = "drop")
+
+ggplot(nordbord_long, aes(x = var)) +
+  geom_histogram(bins = 30, fill = "darkgreen", color = "white") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal()
+
+# ---- perch ----
+perch_vars <- c(
+  "name",
+  "max_peak_power"
+)
+
+perch_long <- perch |>
+  rename(`Max Peak Power` = max_peak_power) |>
+  select(name, `Max Peak Power`) |>
+  pivot_longer(-name, names_to = "variable", values_to = "value") |>
+  group_by(name, variable) |>
+  summarise(var = var(value, na.rm = TRUE), .groups = "drop")
+
+ggplot(perch_long, aes(x = var)) +
+  geom_histogram(bins = 30, fill = "purple", color = "white") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal()
+```

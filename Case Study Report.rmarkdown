@@ -1,0 +1,422 @@
+---
+title: "Case Study Report"
+format: pdf
+editor: visual
+---
+
+```{r, packages}
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(lubridate)
+library(naniar)
+library(lme4)
+```
+
+```{r, load-data}
+forcedeck <- read_excel("data/forcedeck.xlsx")
+forceframe <- read_excel("data/forceframe.xlsx")
+nordbord <- read_excel("data/nordbord.xlsx")
+perch <- read_excel("data/perch.xlsx")
+```
+
+```{r}
+# Select blue and green columns from spreadhseet
+forcedeck <- forcedeck |>
+  select(`Athlete Id`, `Test Date`, `Body Weight [kg]`, 
+         `Peak Power / BM [W/kg]`, `RSI-modified [m/s]`, 
+         `Countermovement Depth [cm]`, `Eccentric Braking Impulse [N s]`,
+         `Concentric Duration [ms]`, 
+         `Eccentric Deceleration RFD / BM [N/s/kg]`, 
+         `Jump Height (Imp-Mom) [cm]`, 
+         `Eccentric Deceleration RFD Asymmetry [% L,R]`, 
+         `Concentric Impulse-100ms [N s]`, `Eccentric Duration [ms]`,
+         `Eccentric Peak Velocity [m/s]`, `Jump Height (Flight Time) [cm]`,
+         `Landing Impulse [N s]`, `Peak Landing Force / BM [N/kg]`, 
+         `Landing Impulse (Asymmetry) [% L,R]`, 
+         `Peak Landing Force Asymmetry [% L,R]`, 
+         `Concentric Impulse (Left) [N s]`, 
+         `Concentric Impulse (Right) [N s]`, 
+         `Eccentric Braking Impulse (Left) [N s]`, 
+         `Eccentric Braking Impulse (Right) [N s]`, 
+         `Eccentric Deceleration RFD (Left) [N/s]`, 
+         `Eccentric Deceleration RFD (Right) [N/s]`, 
+         `Landing Impulse (Left) [N s]`, `Landing Impulse (Right) [N s]`,
+         `Peak Landing Force (Left) [N]`, `Peak Landing Force (Right) [N]`)
+
+forceframe <- forceframe |>
+  select(athleteId, testDateUtc, innerLeftMaxForce, innerRightMaxForce,
+         outerLeftMaxForce, outerRightMaxForce, testPositionName)
+
+nordbord <- nordbord |>
+            select(athleteId, testDateUtc, leftMaxForce, rightMaxForce)
+
+perch <- perch |> 
+         select(name, start_time, avg_ecc_mean_power, avg_ecc_mean_velocity, 
+                avg_mean_power, avg_mean_velocity, avg_peak_power, 
+                avg_peak_velocity, max_ecc_mean_power, max_ecc_mean_velocity,                
+                max_mean_velocity, max_peak_power, max_peak_velocity, 
+                pct_1rm, start_time, weight)
+```
+
+```{r}
+# Separate date and time
+forcedeck <- forcedeck |>
+  separate_wider_delim(cols = `Test Date`, delim = " ", names = c("Date", "Time"))
+
+forceframe <- forceframe |>
+  separate_wider_delim(cols = testDateUtc, delim = "T", names = c("Date", "Time"))
+
+nordbord <- nordbord |>
+  separate_wider_delim(cols = testDateUtc, delim = "T", names = c("Date", "Time")) 
+
+perch <- perch |>
+  mutate(date = as.POSIXct(start_time)) |>
+  separate_wider_delim(cols = date, delim = " ", names = c("Date", "Time")) 
+```
+
+```{r}
+# Format dates
+forcedeck$Date <- ymd(forcedeck$Date)
+forceframe$Date <- ymd(forceframe$Date)
+nordbord$Date <- ymd(nordbord$Date)
+```
+
+
+
+## Trends
+
+
+
+```{r}
+nordbord |>
+  ggplot(aes(x = Date, y = leftMaxForce, group = athleteId)) +
+  geom_line(alpha = 0.5)
+
+forcedeck |>
+  ggplot(aes(x = Date, y = `Peak Power / BM [W/kg]`, group = `Athlete Id`)) +
+  geom_line()
+
+forceframe |>
+  ggplot(aes(x = Date, y = innerLeftMaxForce)) +
+  geom_line()
+
+forceframe |>
+  ggplot(aes(x = innerLeftMaxForce)) +
+  geom_histogram(binwidth = 5)
+
+#perch |>
+  #ggplot(aes(x = Date, y = avg_mean_power, group = athleteId)) +
+  #geom_line()
+```
+
+
+
+## Analysis Ideas
+
+instead of being concerned with the trends in individual athletes' different metrics, what if we take an average score for each measurement for each athlete and look at ratios between left and right legs and between different exercises.
+
+1.  deal with outliers in data
+
+2.  get average scores for each athlete for each exercise
+
+
+
+```{r}
+# Get average scores for each athlete for each exercise (removing NAs)
+avg_forcedeck <- forcedeck |> 
+  select(-c(Date, Time)) |>
+  group_by(`Athlete Id`) |>
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+avg_forceframe <- forceframe |> 
+  select(-c(Date, Time)) |>
+  group_by(athleteId, testPositionName) |>
+  summarise(across(everything(), mean, na.rm = TRUE))
+  
+avg_nordboard <- nordbord |> 
+  select(-c(Date, Time)) |>
+  group_by(athleteId) |>
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+avg_perch <- perch |> 
+  select(-c(start_time, Date, Time, pct_1rm)) |> 
+  group_by(name) |>
+  summarise(across(everything(), mean, na.rm = TRUE))
+```
+
+
+
+1.  create one big dataset with all athletes and their average scores on each exercise
+
+
+
+```{r}
+# Join average data sets
+data <- left_join(avg_nordboard, avg_forceframe) 
+data <- left_join(data, avg_forcedeck, by = join_by(athleteId == `Athlete Id`))
+data <- left_join(data, avg_perch, join_by(athleteId == name))
+
+# Unify body weight variable
+data <- data |>
+  mutate(body_weight = case_when(
+    !is.na(`Body Weight [kg]`) ~ `Body Weight [kg]`,
+    !is.na(weight) ~ weight * 0.453592,
+    TRUE ~ NA_real_
+  )) |>
+  select(-c(`Body Weight [kg]`, weight))
+
+# Count tests within avg_forceframe
+avg_forceframe %>% ungroup() %>% count(testPositionName)
+
+# Filter for two tests that are done the most
+data <- data %>% filter(testPositionName == "Shoulder IR/ER - Custom" | 
+                            testPositionName == "Hip AD/AB - 60")
+
+# pivot testPositionName and associated four MaxForce variables
+data <- data |>
+  pivot_wider(names_from = testPositionName,
+              values_from = c(innerLeftMaxForce, innerRightMaxForce, 
+                              outerLeftMaxForce, outerRightMaxForce))
+
+# Calculate Asymmetries % for L/R variables
+data <- data %>% 
+  mutate(maxforce_asymmetry = 100 * abs((leftMaxForce - rightMaxForce)/max(leftMaxForce, rightMaxForce)), 
+         innerMaxForce_Asymmetry_hips = 100 * abs((`innerLeftMaxForce_Hip AD/AB - 60` - `innerRightMaxForce_Hip AD/AB - 60`)/ pmax(`innerLeftMaxForce_Hip AD/AB - 60`, `innerRightMaxForce_Hip AD/AB - 60`)), 
+         outerMaxForce_Asymmetry_hips = 100 * abs((`outerLeftMaxForce_Hip AD/AB - 60` - `outerRightMaxForce_Hip AD/AB - 60`)/ pmax(`outerLeftMaxForce_Hip AD/AB - 60`, `outerRightMaxForce_Hip AD/AB - 60`)),
+         innerMaxForce_Asymmetry_shoulders = 100 * abs((`innerLeftMaxForce_Shoulder IR/ER - Custom` - `innerRightMaxForce_Shoulder IR/ER - Custom`)/ pmax(`innerLeftMaxForce_Shoulder IR/ER - Custom`, `innerRightMaxForce_Shoulder IR/ER - Custom`)),
+         outerMaxForce_Asymmetry_shoulders = 100 * abs((`outerLeftMaxForce_Shoulder IR/ER - Custom` - `outerRightMaxForce_Shoulder IR/ER - Custom`)/ pmax(`outerLeftMaxForce_Shoulder IR/ER - Custom`, `outerRightMaxForce_Shoulder IR/ER - Custom`)))
+
+# Scale data 
+scaled_data <- data |>
+  mutate(
+    leftMaxForce = scale(leftMaxForce),
+    rightMaxForce = scale(rightMaxForce),
+    `Peak Power / BM [W/kg]` = scale(`Peak Power / BM [W/kg]`),
+    `RSI-modified [m/s]` = scale(`RSI-modified [m/s]`),
+    `Countermovement Depth [cm]` = scale(`Countermovement Depth [cm]`),
+    `Eccentric Braking Impulse [N s]` = scale(`Eccentric Braking Impulse [N s]`),
+    `Concentric Duration [ms]` = scale(`Concentric Duration [ms]`),
+    `Eccentric Deceleration RFD / BM [N/s/kg]` = scale(`Eccentric Deceleration RFD / BM [N/s/kg]`),
+    `Jump Height (Imp-Mom) [cm]` = scale(`Jump Height (Imp-Mom) [cm]`),
+    `Concentric Impulse-100ms [N s]` = scale(`Concentric Impulse-100ms [N s]`),
+    `Eccentric Duration [ms]` = scale(`Eccentric Duration [ms]`),
+    `Eccentric Peak Velocity [m/s]` = scale(`Eccentric Peak Velocity [m/s]`),
+    `Jump Height (Flight Time) [cm]` = scale(`Jump Height (Flight Time) [cm]`),
+    `Landing Impulse [N s]` = scale(`Landing Impulse [N s]`),
+    `Peak Landing Force / BM [N/kg]` = scale(`Peak Landing Force / BM [N/kg]`),
+    `Concentric Impulse (Left) [N s]` = scale(`Concentric Impulse (Left) [N s]`),
+    `Concentric Impulse (Right) [N s]` = scale(`Concentric Impulse (Right) [N s]`),
+    `Eccentric Braking Impulse (Left) [N s]` = scale(`Eccentric Braking Impulse (Left) [N s]`),
+    `Eccentric Braking Impulse (Right) [N s]` = scale(`Eccentric Braking Impulse (Right) [N s]`),
+    `Eccentric Deceleration RFD (Left) [N/s]` = scale(`Eccentric Deceleration RFD (Left) [N/s]`),
+    `Eccentric Deceleration RFD (Right) [N/s]` = scale(`Eccentric Deceleration RFD (Right) [N/s]`),
+    `Landing Impulse (Left) [N s]` = scale(`Landing Impulse (Left) [N s]`),
+    `Landing Impulse (Right) [N s]` = scale(`Landing Impulse (Right) [N s]`),
+    `Peak Landing Force (Left) [N]` = scale(`Peak Landing Force (Left) [N]`),
+    `Peak Landing Force (Right) [N]` = scale(`Peak Landing Force (Right) [N]`),
+    avg_ecc_mean_power = scale(avg_ecc_mean_power),
+    avg_ecc_mean_velocity = scale(avg_ecc_mean_velocity),
+    avg_mean_power = scale(avg_mean_power),
+    avg_mean_velocity = scale(avg_mean_velocity),
+    avg_peak_power = scale(avg_peak_power),
+    avg_peak_velocity = scale(avg_peak_velocity),
+    max_ecc_mean_power = scale(max_ecc_mean_power),
+    max_ecc_mean_velocity = scale(max_ecc_mean_velocity),
+    max_mean_velocity = scale(max_mean_velocity),
+    max_peak_power = scale(max_peak_power),
+    max_peak_velocity = scale(max_peak_velocity),
+    body_weight = scale(body_weight),
+    `innerLeftMaxForce_Hip AD/AB - 60` = scale(`innerLeftMaxForce_Hip AD/AB - 60`),
+    `innerLeftMaxForce_Shoulder IR/ER - Custom` = scale(`innerLeftMaxForce_Shoulder IR/ER - Custom`),
+    `innerRightMaxForce_Hip AD/AB - 60` = scale(`innerRightMaxForce_Hip AD/AB - 60`),
+    `innerRightMaxForce_Shoulder IR/ER - Custom` = scale(`innerRightMaxForce_Shoulder IR/ER - Custom`),
+    `outerLeftMaxForce_Hip AD/AB - 60` = scale(`outerLeftMaxForce_Hip AD/AB - 60`),
+    `outerLeftMaxForce_Shoulder IR/ER - Custom` = scale(`outerLeftMaxForce_Shoulder IR/ER - Custom`),
+    `outerRightMaxForce_Hip AD/AB - 60` = scale(`outerRightMaxForce_Hip AD/AB - 60`),
+    `outerRightMaxForce_Shoulder IR/ER - Custom` = scale(`outerRightMaxForce_Shoulder IR/ER - Custom`)
+  )
+```
+
+
+
+2.  compare between all iterations of groups
+    2.  test score of interest for each test:
+
+
+
+```{r}
+cor_fd <- avg_forcedeck |> select(!`Athlete Id`) |> cor()
+```
+
+```{r}
+miss_var_summary(data)
+```
+
+```{r}
+#Forcedeck model
+fd_mod1 <- lm(`Peak Power / BM [W/kg]` ~ 
+               rightMaxForce + max_peak_power +
+               `innerRightMaxForce_Hip AD/AB - 60` + 
+               `innerRightMaxForce_Shoulder IR/ER - Custom` + body_weight, data = scaled_data)
+
+summary(fd_mod1)
+
+fd_mod2 <- lm(`RSI-modified [m/s]` ~ 
+               rightMaxForce + max_peak_power +
+               `innerRightMaxForce_Hip AD/AB - 60` + 
+               `innerRightMaxForce_Shoulder IR/ER - Custom` + body_weight, data = scaled_data)
+
+summary(fd_mod2)
+```
+
+
+
+NordBord - Left/Right Max Force \[N\] - maxforce_asymmetry
+
+Force Deck - RSI-modified \[m/s\] or Peak Power / BM \[W/kg\] - Eccentric Deceleration RFD Asymmetry \[% L,R\] - Landing Impulse (Asymmetry) \[% L,R\] - Peak Landing Force Asymmetry \[% L,R\]
+
+Force Frame - Outer/Inner Left/Right Max Force \[N\] - innerMaxForce_Asymmetry_hips - outerMaxForce_Asymmetry_hips - innerMaxForce_Asymmetry_shoulders - outerMaxForce_Asymmetry_hips
+
+Perch - Max Peak Power \[W\]
+
+
+
+```{r}
+#Force Frame model
+ff_mod_hip <- lm(`innerRightMaxForce_Hip AD/AB - 60` ~
+                `Peak Power / BM [W/kg]` + rightMaxForce + max_peak_power +
+                `innerRightMaxForce_Shoulder IR/ER - Custom` + body_weight, data = scaled_data)
+ 
+summary(ff_mod_hip)
+
+ff_mod_shoulder <- lm(`innerRightMaxForce_Shoulder IR/ER - Custom` ~
+                `Peak Power / BM [W/kg]` + rightMaxForce + max_peak_power +
+                `innerRightMaxForce_Hip AD/AB - 60` + body_weight, data = scaled_data)
+ 
+summary(ff_mod_shoulder)
+
+
+## Using RSI instead of peak power
+ff_mod_hip <- lm(`innerRightMaxForce_Hip AD/AB - 60` ~
+                `RSI-modified [m/s]` + rightMaxForce + max_peak_power +
+                `innerRightMaxForce_Shoulder IR/ER - Custom` + body_weight, data = scaled_data)
+ 
+summary(ff_mod_hip)
+
+ff_mod_shoulder <- lm(`innerRightMaxForce_Shoulder IR/ER - Custom` ~
+                `RSI-modified [m/s]` + rightMaxForce + max_peak_power +
+                `innerRightMaxForce_Hip AD/AB - 60` + body_weight, data = scaled_data)
+ 
+summary(ff_mod_shoulder)
+```
+
+```{r}
+#Nordbord Model
+nb_mod <- lm(rightMaxForce ~
+                `RSI-modified [m/s]` + `innerRightMaxForce_Shoulder IR/ER - Custom` + 
+                  max_peak_power + body_weight +
+                `innerRightMaxForce_Hip AD/AB - 60` + body_weight, data = data)
+ 
+summary(nb_mod)
+```
+
+
+
+Perch:
+
+
+
+```{r}
+p_mod <- lm(max_peak_power ~
+               `RSI-modified [m/s]` + `innerRightMaxForce_Shoulder IR/ER - Custom` + 
+                 rightMaxForce + body_weight +
+               `innerRightMaxForce_Hip AD/AB - 60`, data = data)
+
+summary(p_mod)
+```
+
+```{r}
+p_fd_mod <- lm(avg_peak_power ~
+               `RSI-modified [m/s]` + body_weight, data = scaled_data)
+
+summary(p_fd_mod)
+```
+
+```{r}
+test_p_fd_mod <- lm(avg_peak_power ~ 
+               `RSI-modified [m/s]` + body_weight, data = scaled_data)
+
+summary(test_p_fd_mod)
+```
+
+
+
+## Asymmetries between L and R metrics to predict performance
+
+For each metric of interest, we can use both raw metrics and differences to predict performance, assuming heteroskedascisity plots do not show major issues.
+
+NordBord - Left/Right Max Force \[N\] - maxforce_asymmetry
+
+Force Deck - RSI-modified \[m/s\] or Peak Power / BM \[W/kg\] - Eccentric Deceleration RFD Asymmetry \[% L,R\] - Landing Impulse (Asymmetry) \[% L,R\] - Peak Landing Force Asymmetry \[% L,R\]
+
+Force Frame - Outer/Inner Left/Right Max Force \[N\] - innerMaxForce_Asymmetry_hips - outerMaxForce_Asymmetry_hips - innerMaxForce_Asymmetry_shoulders - outerMaxForce_Asymmetry_hips
+
+Perch - Max Peak Power \[W\]
+
+
+
+```{r}
+# Nordbord
+summary(lm( rightMaxForce ~ `Landing Impulse (Asymmetry) [% L,R]`+
+                `Peak Landing Force Asymmetry [% L,R]`+
+                `Eccentric Deceleration RFD Asymmetry [% L,R]`+ 
+                innerMaxForce_Asymmetry_hips + 
+                innerMaxForce_Asymmetry_shoulders + 
+                outerMaxForce_Asymmetry_hips + 
+                outerMaxForce_Asymmetry_shoulders + body_weight, data = data))
+```
+
+```{r}
+# Perch
+summary(lm( max_peak_power ~ `Landing Impulse (Asymmetry) [% L,R]`+
+                `Peak Landing Force Asymmetry [% L,R]`+
+                `Eccentric Deceleration RFD Asymmetry [% L,R]`+ 
+                maxforce_asymmetry + 
+                innerMaxForce_Asymmetry_hips + 
+                innerMaxForce_Asymmetry_shoulders + 
+                outerMaxForce_Asymmetry_hips + 
+                outerMaxForce_Asymmetry_shoulders + body_weight, data = data))
+```
+
+```{r}
+# Force Deck
+summary(lm( `RSI-modified [m/s]` ~ maxforce_asymmetry + 
+                innerMaxForce_Asymmetry_hips + 
+                innerMaxForce_Asymmetry_shoulders + 
+                outerMaxForce_Asymmetry_hips + 
+                outerMaxForce_Asymmetry_shoulders + body_weight, data = data))
+```
+
+```{r}
+#Force Frame
+summary(lm(`innerRightMaxForce_Hip AD/AB - 60` ~ 
+             `Landing Impulse (Asymmetry) [% L,R]`+
+                `Peak Landing Force Asymmetry [% L,R]`+
+                `Eccentric Deceleration RFD Asymmetry [% L,R]`+ 
+                maxforce_asymmetry + 
+                innerMaxForce_Asymmetry_shoulders + 
+                outerMaxForce_Asymmetry_shoulders + body_weight, data = data))
+
+summary(lm(`innerRightMaxForce_Shoulder IR/ER - Custom` ~ 
+             `Landing Impulse (Asymmetry) [% L,R]`+
+                `Peak Landing Force Asymmetry [% L,R]`+
+                `Eccentric Deceleration RFD Asymmetry [% L,R]`+ 
+                maxforce_asymmetry + 
+                innerMaxForce_Asymmetry_hips + 
+                outerMaxForce_Asymmetry_hips + body_weight, data = data))
+```
+
